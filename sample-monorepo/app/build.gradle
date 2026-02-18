@@ -1,0 +1,2 @@
+plugins { id 'java' }
+dependencies { implementation project(':lib-a') }

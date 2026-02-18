@@ -1,0 +1,6 @@
+// Root build file
+allprojects {
+    repositories {
+        mavenCentral()
+    }
+}

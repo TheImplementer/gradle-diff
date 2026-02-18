@@ -1,0 +1,10 @@
+rootProject.name = 'sample-monorepo'
+include 'app'
+include 'lib-a'
+include 'lib-b'
+
+// This will be used to inject the graph task during local testing
+// In a real scenario, this could be a plugin or just a separate script
+gradle.rootProject {
+    apply from: 'gradle-diff.gradle'
+}

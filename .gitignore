@@ -1,0 +1,5 @@
+.gradle/
+build/
+*.json
+.gradle-diff-hash
+gradle-tool/

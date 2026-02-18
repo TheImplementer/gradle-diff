@@ -1,0 +1,22 @@
+import groovy.json.JsonBuilder
+
+task exportProjectGraph {
+    doLast {
+        def projects = []
+        rootProject.allprojects.each { p ->
+            def deps = []
+            p.configurations.findByName('runtimeClasspath')?.allDependencies?.withType(ProjectDependency)?.each { dep ->
+                deps << dep.dependencyProject.path
+            }
+            projects << [
+                path: p.path,
+                dir: p.projectDir.absolutePath.replace(rootProject.projectDir.absolutePath + File.separator, ""),
+                dependencies: deps
+            ]
+        }
+        
+        def outputFile = file("project-graph.json")
+        outputFile.text = new JsonBuilder(projects).toPrettyString()
+        println "Graph exported to ${outputFile.absolutePath}"
+    }
+}
