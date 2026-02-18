@@ -64,21 +64,39 @@ def refresh_graph():
         print(f"Error refreshing graph: {e}. Ensure gradle is installed or gradlew is executable.", file=sys.stderr)
         sys.exit(1)
 
-def get_git_changes(since_commit):
-    """Returns a list of changed files since since_commit, filtered by ignore list."""
+def get_git_info(since_commit):
+    """Returns commits and file statuses since since_commit."""
     try:
-        output = subprocess.check_output(['git', 'diff', '--name-only', since_commit]).decode('utf-8')
-        raw_files = [f for f in output.strip().split('\n') if f]
-        
+        # Get commit log
+        log_output = subprocess.check_output([
+            'git', 'log', f'{since_commit}..HEAD', 
+            '--pretty=format:%h|%an|%ad|%s', '--date=short'
+        ]).decode('utf-8')
+        commits = []
+        if log_output.strip():
+            for line in log_output.strip().split('\n'):
+                parts = line.split('|')
+                if len(parts) == 4:
+                    commits.append({"hash": parts[0], "author": parts[1], "date": parts[2], "subject": parts[3]})
+
+        # Get file statuses (Added, Modified, Deleted)
+        status_output = subprocess.check_output(['git', 'diff', '--name-status', since_commit]).decode('utf-8')
+        all_files = []
         filtered_files = []
-        for f in raw_files:
-            if not any(re.match(pattern, f) for pattern in IGNORED_PATTERNS):
-                filtered_files.append(f)
+        if status_output.strip():
+            for line in status_output.strip().split('\n'):
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    status, file_path = parts[0], parts[1]
+                    file_info = {"status": status, "path": file_path}
+                    all_files.append(file_info)
+                    if not any(re.match(pattern, file_path) for pattern in IGNORED_PATTERNS):
+                        filtered_files.append(file_info)
         
-        return raw_files, filtered_files
+        return commits, all_files, filtered_files
     except subprocess.CalledProcessError:
-        print(f"Error: Git diff failed for commit '{since_commit}'", file=sys.stderr)
-        return [], []
+        print(f"Error: Git operations failed for commit '{since_commit}'", file=sys.stderr)
+        return [], [], []
 
 def find_affected_projects(graph_file, changed_files):
     """Finds all projects affected by changed_files and builds a detailed reason map."""
@@ -104,7 +122,9 @@ def find_affected_projects(graph_file, changed_files):
         "gradle-diff.gradle"
     ]
     
-    for file_path in changed_files:
+    changed_paths = [f['path'] for f in changed_files]
+    
+    for file_path in changed_paths:
         for trigger in global_triggers:
             if file_path.startswith(trigger):
                 report_data["global_trigger"] = file_path
@@ -113,7 +133,8 @@ def find_affected_projects(graph_file, changed_files):
 
     # 2. Directory mapping (Direct Impact)
     direct_affected = {} 
-    for file_path in changed_files:
+    for file_info in changed_files:
+        file_path = file_info['path']
         best_match = None
         for p in sorted(projects, key=lambda x: len(x['dir']), reverse=True):
             p_dir = p['dir'].rstrip('/')
@@ -123,7 +144,7 @@ def find_affected_projects(graph_file, changed_files):
                 break
         if best_match:
             if best_match not in direct_affected: direct_affected[best_match] = []
-            direct_affected[best_match].append(file_path)
+            direct_affected[best_match].append(file_info)
 
     report_data["direct_impact"] = direct_affected
 
@@ -166,19 +187,24 @@ def generate_html_report(data, output_path):
             body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f4f7f9; }}
             .card {{ background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }}
             h1, h2 {{ color: #2c3e50; }}
-            .badge {{ display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; text-transform: uppercase; }}
+            .badge {{ display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase; }}
             .badge-hit {{ background: #d4edda; color: #155724; }}
             .badge-miss {{ background: #f8d7da; color: #721c24; }}
             .badge-global {{ background: #fff3cd; color: #856404; }}
+            .status-A {{ background: #28a745; color: white; }}
+            .status-M {{ background: #ffc107; color: black; }}
+            .status-D {{ background: #dc3545; color: white; }}
             .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }}
             .stat-box {{ text-align: center; padding: 15px; border-radius: 6px; background: #f8f9fa; border: 1px solid #dee2e6; }}
             .stat-val {{ display: block; font-size: 24px; font-weight: bold; color: #007bff; }}
             .stat-label {{ font-size: 12px; color: #6c757d; }}
-            ul {{ list-style: none; padding: 0; }}
-            li {{ padding: 8px 0; border-bottom: 1px solid #eee; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+            th, td {{ text-align: left; padding: 10px; border-bottom: 1px solid #eee; font-size: 14px; }}
+            th {{ background: #f8f9fa; color: #666; font-weight: 600; }}
             .project-path {{ font-family: monospace; font-weight: bold; color: #e83e8c; }}
             .reason {{ font-size: 13px; color: #666; margin-left: 10px; }}
             .task-list {{ background: #2d3436; color: #dfe6e9; padding: 15px; border-radius: 6px; font-family: monospace; white-space: pre-wrap; word-break: break-all; }}
+            .commit-hash {{ font-family: monospace; color: #007bff; }}
         </style>
     </head>
     <body>
@@ -207,10 +233,27 @@ def generate_html_report(data, output_path):
         {global_section}
 
         <div class="card">
+            <h2>Recent Commits</h2>
+            <table>
+                <thead><tr><th>Hash</th><th>Author</th><th>Date</th><th>Subject</th></tr></thead>
+                <tbody>{commit_rows}</tbody>
+            </table>
+        </div>
+
+        <div class="card">
             <h2>Affected Projects & Impact Path</h2>
-            <ul>
-                {project_items}
-            </ul>
+            <table>
+                <thead><tr><th>Project</th><th>Reason</th></tr></thead>
+                <tbody>{project_rows}</tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <h2>Detailed File Changes</h2>
+            <table>
+                <thead><tr><th>Status</th><th>Path</th></tr></thead>
+                <tbody>{file_rows}</tbody>
+            </table>
         </div>
 
         <div class="card">
@@ -233,17 +276,30 @@ def generate_html_report(data, output_path):
         </div>
         """
 
-    project_items = ""
+    commit_rows = ""
+    for c in data.get("commits", []):
+        commit_rows += f"<tr><td class='commit-hash'>{c['hash']}</td><td>{c['author']}</td><td>{c['date']}</td><td>{c['subject']}</td></tr>"
+    if not commit_rows: commit_rows = "<tr><td colspan='4'>No new commits found.</td></tr>"
+
+    project_rows = ""
     for p in data.get("affected_projects", []):
         if p == ":": continue
         reason = ""
         if p in data.get("direct_impact", {}):
-            reason = f"<span class='reason'>Directly modified ({len(data['direct_impact'][p])} files)</span>"
+            file_count = len(data['direct_impact'][p])
+            reason = f"Directly modified ({file_count} files)"
         elif p in data.get("transitive_impact", {}):
             triggers = ", ".join(data['transitive_impact'][p])
-            reason = f"<span class='reason'>Depends on: {triggers}</span>"
+            reason = f"Depends on: {triggers}"
         
-        project_items += f"<li><span class='project-path'>{p}</span> {reason}</li>"
+        project_rows += f"<tr><td><span class='project-path'>{p}</span></td><td class='reason'>{reason}</td></tr>"
+    if not project_rows: project_rows = "<tr><td colspan='2'>No projects affected.</td></tr>"
+
+    file_rows = ""
+    for f in data.get("file_details", []):
+        status_badge = f"<span class='badge status-{f['status'][0]}'>{f['status']}</span>"
+        file_rows += f"<tr><td>{status_badge}</td><td style='font-family: monospace;'>{f['path']}</td></tr>"
+    if not file_rows: file_rows = "<tr><td colspan='2'>No files changed.</td></tr>"
 
     content = html_template.format(
         timestamp=timestamp,
@@ -254,7 +310,9 @@ def generate_html_report(data, output_path):
         affected_count=len(data["affected_projects"]),
         files_changed=data["changes"]["filtered"],
         global_section=global_section,
-        project_items=project_items,
+        commit_rows=commit_rows,
+        project_rows=project_rows,
+        file_rows=file_rows,
         tasks=" ".join(data.get("tasks", []))
     )
     
@@ -274,6 +332,8 @@ def main():
         "cache": {"status": "hit", "source": "local"},
         "config_hash": None,
         "changes": {"total": 0, "filtered": 0},
+        "commits": [],
+        "file_details": [],
         "affected_projects": [],
         "tasks": []
     }
@@ -314,17 +374,19 @@ def main():
             f.write(current_hash)
 
     # 3. Analyze Git Changes
-    raw_changes, filtered_changes = get_git_changes(args.since)
-    report["changes"] = {"total": len(raw_changes), "filtered": len(filtered_changes)}
+    commits, all_files, filtered_files = get_git_info(args.since)
+    report["commits"] = commits
+    report["file_details"] = all_files
+    report["changes"] = {"total": len(all_files), "filtered": len(filtered_files)}
     
-    if not filtered_changes:
+    if not filtered_files:
         if args.report:
             with open(args.report, 'w') as f: json.dump(report, f, indent=2)
         if args.html_report:
             generate_html_report(report, args.html_report)
         return
 
-    affected_paths, impact_report = find_affected_projects(GRAPH_FILE, filtered_changes)
+    affected_paths, impact_report = find_affected_projects(GRAPH_FILE, filtered_files)
     report.update(impact_report)
     report["affected_projects"] = affected_paths
     
