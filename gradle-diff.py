@@ -5,6 +5,7 @@ import sys
 import os
 import hashlib
 import re
+import argparse
 
 # Configuration
 GRAPH_FILE = "project-graph.json"
@@ -21,7 +22,7 @@ IGNORED_PATTERNS = [
     r"\.github/.*"
 ]
 
-# Remote Cache Config (Optional - set GRADLE_DIFF_S3_BUCKET in CI)
+# Remote Cache Config
 BUCKET = os.environ.get("GRADLE_DIFF_S3_BUCKET")
 PREFIX = os.environ.get("GRADLE_DIFF_S3_PREFIX", "gradle-diff-cache")
 
@@ -38,7 +39,6 @@ def s3_download(remote_path, local_path):
     if not BUCKET: return False
     try:
         full_s3_path = f"s3://{BUCKET}/{PREFIX}/{remote_path}"
-        # Check if the file exists first to avoid noisy stderr from aws s3 cp
         subprocess.check_call(["aws", "s3", "ls", full_s3_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.check_call(["aws", "s3", "cp", full_s3_path, local_path, "--quiet"])
         return True
@@ -74,20 +74,26 @@ def get_git_changes(since_commit):
             if not any(re.match(pattern, f) for pattern in IGNORED_PATTERNS):
                 filtered_files.append(f)
         
-        return filtered_files
+        return raw_files, filtered_files
     except subprocess.CalledProcessError:
         print(f"Error: Git diff failed for commit '{since_commit}'", file=sys.stderr)
-        return []
+        return [], []
 
 def find_affected_projects(graph_file, changed_files):
-    """Finds all projects affected by changed_files based on the graph."""
+    """Finds all projects affected by changed_files and builds a detailed reason map."""
     if not os.path.exists(graph_file):
-        return []
+        return [], {}
         
     with open(graph_file, 'r') as f:
         projects = json.load(f)
 
-    # 1. Global triggers (Build config changes trigger ALL projects)
+    report_data = {
+        "global_trigger": None,
+        "direct_impact": {},
+        "transitive_impact": {}
+    }
+
+    # 1. Global triggers
     global_triggers = [
         "gradle/libs.versions.toml",
         "buildSrc/",
@@ -100,11 +106,12 @@ def find_affected_projects(graph_file, changed_files):
     for file_path in changed_files:
         for trigger in global_triggers:
             if file_path.startswith(trigger):
-                print(f"Global configuration change detected: {file_path}. Affecting all projects.", file=sys.stderr)
-                return sorted([p['path'] for p in projects if p['path'] != ":"])
+                report_data["global_trigger"] = file_path
+                all_paths = sorted([p['path'] for p in projects if p['path'] != ":"])
+                return all_paths, report_data
 
-    # 2. Directory mapping
-    affected_paths = set()
+    # 2. Directory mapping (Direct Impact)
+    direct_affected = {} # path -> [files]
     for file_path in changed_files:
         best_match = None
         for p in sorted(projects, key=lambda x: len(x['dir']), reverse=True):
@@ -114,9 +121,12 @@ def find_affected_projects(graph_file, changed_files):
                 best_match = p['path']
                 break
         if best_match:
-            affected_paths.add(best_match)
+            if best_match not in direct_affected: direct_affected[best_match] = []
+            direct_affected[best_match].append(file_path)
 
-    # 3. Inverted graph
+    report_data["direct_impact"] = direct_affected
+
+    # 3. Inverted graph for Transitive Impact
     dependants = {p['path']: set() for p in projects}
     for p in projects:
         for dep in p.get('dependencies', []):
@@ -124,24 +134,43 @@ def find_affected_projects(graph_file, changed_files):
                 dependants[dep].add(p['path'])
 
     # 4. Transitive closure
-    total_affected = set()
-    queue = list(affected_paths)
+    total_affected = set(direct_affected.keys())
+    queue = list(direct_affected.keys())
+    
+    transitive_reasons = {} # path -> set of paths that triggered it
+    
     while queue:
         current = queue.pop(0)
-        if current not in total_affected:
-            total_affected.add(current)
-            if current in dependants:
-                queue.extend(list(dependants[current]))
+        if current in dependants:
+            for dep_of_current in dependants[current]:
+                if dep_of_current not in total_affected:
+                    total_affected.add(dep_of_current)
+                    queue.append(dep_of_current)
+                    if dep_of_current not in transitive_reasons: transitive_reasons[dep_of_current] = set()
+                    transitive_reasons[dep_of_current].add(current)
+                elif dep_of_current in transitive_reasons:
+                    transitive_reasons[dep_of_current].add(current)
 
-    return sorted(list(total_affected))
+    # Convert sets to lists for JSON serialization
+    report_data["transitive_impact"] = {k: list(v) for k, v in transitive_reasons.items()}
+
+    return sorted(list(total_affected)), report_data
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: gradle-diff <since_commit> [task1 task2 ...]")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Calculate affected Gradle tasks based on Git diff.")
+    parser.add_argument("since", help="The git commit/branch to diff against.")
+    parser.add_argument("tasks", nargs="+", help="The Gradle tasks to run (e.g., test assemble).")
+    parser.add_argument("--report", help="Path to write a JSON report of the analysis.")
+    args = parser.parse_args()
 
-    since_commit = sys.argv[1]
-    task_names = sys.argv[2:] if len(sys.argv) > 2 else ["test"]
+    report = {
+        "since_commit": args.since,
+        "cache": {"status": "hit", "source": "local"},
+        "config_hash": None,
+        "changes": {"total": 0, "filtered": 0},
+        "affected_projects": [],
+        "tasks": []
+    }
 
     # 1. Calculate Configuration Hash
     build_scripts = []
@@ -153,9 +182,10 @@ def main():
                 build_scripts.append(os.path.join(root, f))
     
     current_hash = get_hash(build_scripts)
+    report["config_hash"] = current_hash
     remote_key = f"graph-{current_hash}.json"
 
-    # 2. Try to get cached graph (Local or Remote)
+    # 2. Cache Logic
     stale = True
     if os.path.exists(GRAPH_FILE):
         hash_file = ".gradle-diff-hash"
@@ -166,9 +196,10 @@ def main():
 
     if stale:
         if BUCKET and s3_download(remote_key, GRAPH_FILE):
-            print(f"Remote cache hit for {current_hash}. Downloaded from S3.", file=sys.stderr)
+            report["cache"] = {"status": "hit", "source": "s3"}
             stale = False
         else:
+            report["cache"] = {"status": "miss", "source": "none"}
             refresh_graph()
             if BUCKET:
                 s3_upload(GRAPH_FILE, remote_key)
@@ -177,19 +208,31 @@ def main():
             f.write(current_hash)
 
     # 3. Analyze Git Changes
-    changed_files = get_git_changes(since_commit)
-    if not changed_files:
+    raw_changes, filtered_changes = get_git_changes(args.since)
+    report["changes"] = {"total": len(raw_changes), "filtered": len(filtered_changes)}
+    
+    if not filtered_changes:
+        if args.report:
+            with open(args.report, 'w') as f: json.dump(report, f, indent=2)
         return
 
-    affected = find_affected_projects(GRAPH_FILE, changed_files)
+    affected_paths, impact_report = find_affected_projects(GRAPH_FILE, filtered_changes)
+    report.update(impact_report)
+    report["affected_projects"] = affected_paths
     
-    if affected:
-        output = []
-        for p in affected:
+    if affected_paths:
+        task_list = []
+        for p in affected_paths:
             if p == ":": continue
-            for t in task_names:
-                output.append(f"{p}:{t}")
-        print(" ".join(output))
+            for t in args.tasks:
+                task_list.append(f"{p}:{t}")
+        
+        report["tasks"] = task_list
+        print(" ".join(task_list))
+
+    if args.report:
+        with open(args.report, 'w') as f:
+            json.dump(report, f, indent=2)
 
 if __name__ == "__main__":
     main()
