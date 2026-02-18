@@ -34,12 +34,14 @@ To enable remote caching across ephemeral agents, set:
 - `GRADLE_DIFF_S3_BUCKET`: Your S3 bucket name.
 - `GRADLE_DIFF_S3_PREFIX`: (Optional) S3 folder path.
 
-## Usage
-
-### Local Development
-To see what tasks would run since the last commit:
+### Reporting
+You can generate structured reports for CI artifacts:
 ```bash
-python3 gradle-diff.py HEAD~1 test
+# JSON report for automation
+python3 gradle-diff.py HEAD~1 test --report build/report.json
+
+# HTML report for a visual dashboard
+python3 gradle-diff.py HEAD~1 test --html-report build/report.html
 ```
 
 ### CI Pipeline (Jenkins/Trunk-Based)

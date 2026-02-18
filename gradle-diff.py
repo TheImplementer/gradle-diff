@@ -6,6 +6,7 @@ import os
 import hashlib
 import re
 import argparse
+from datetime import datetime
 
 # Configuration
 GRAPH_FILE = "project-graph.json"
@@ -111,7 +112,7 @@ def find_affected_projects(graph_file, changed_files):
                 return all_paths, report_data
 
     # 2. Directory mapping (Direct Impact)
-    direct_affected = {} # path -> [files]
+    direct_affected = {} 
     for file_path in changed_files:
         best_match = None
         for p in sorted(projects, key=lambda x: len(x['dir']), reverse=True):
@@ -137,7 +138,7 @@ def find_affected_projects(graph_file, changed_files):
     total_affected = set(direct_affected.keys())
     queue = list(direct_affected.keys())
     
-    transitive_reasons = {} # path -> set of paths that triggered it
+    transitive_reasons = {} 
     
     while queue:
         current = queue.pop(0)
@@ -151,16 +152,121 @@ def find_affected_projects(graph_file, changed_files):
                 elif dep_of_current in transitive_reasons:
                     transitive_reasons[dep_of_current].add(current)
 
-    # Convert sets to lists for JSON serialization
     report_data["transitive_impact"] = {k: list(v) for k, v in transitive_reasons.items()}
 
     return sorted(list(total_affected)), report_data
+
+def generate_html_report(data, output_path):
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Gradle Diff Report</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f4f7f9; }
+            .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+            h1, h2 { color: #2c3e50; }
+            .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
+            .badge-hit { background: #d4edda; color: #155724; }
+            .badge-miss { background: #f8d7da; color: #721c24; }
+            .badge-global { background: #fff3cd; color: #856404; }
+            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+            .stat-box { text-align: center; padding: 15px; border-radius: 6px; background: #f8f9fa; border: 1px solid #dee2e6; }
+            .stat-val { display: block; font-size: 24px; font-weight: bold; color: #007bff; }
+            .stat-label { font-size: 12px; color: #6c757d; }
+            ul { list-style: none; padding: 0; }
+            li { padding: 8px 0; border-bottom: 1px solid #eee; }
+            .project-path { font-family: monospace; font-weight: bold; color: #e83e8c; }
+            .reason { font-size: 13px; color: #666; margin-left: 10px; }
+            .task-list { background: #2d3436; color: #dfe6e9; padding: 15px; border-radius: 6px; font-family: monospace; white-space: pre-wrap; word-break: break-all; }
+        </style>
+    </head>
+    <body>
+        <h1>Gradle Diff Analysis</h1>
+        <p>Generated at: {timestamp}</p>
+
+        <div class="grid">
+            <div class="card stat-box">
+                <span class="stat-label">Since Commit</span>
+                <span class="stat-val" style="font-size: 14px;">{since_commit}</span>
+            </div>
+            <div class="card stat-box">
+                <span class="stat-label">Cache Status</span>
+                <span class="badge {cache_class}">{cache_status} ({cache_source})</span>
+            </div>
+            <div class="card stat-box">
+                <span class="stat-label">Affected Projects</span>
+                <span class="stat-val">{affected_count}</span>
+            </div>
+            <div class="card stat-box">
+                <span class="stat-label">Files Changed</span>
+                <span class="stat-val">{files_changed}</span>
+            </div>
+        </div>
+
+        {global_section}
+
+        <div class="card">
+            <h2>Affected Projects & Impact Path</h2>
+            <ul>
+                {project_items}
+            </ul>
+        </div>
+
+        <div class="card">
+            <h2>Execution Command</h2>
+            <div class="task-list">./gradlew {tasks}</div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cache_class = "badge-hit" if data["cache"]["status"] == "hit" else "badge-miss"
+    
+    global_section = ""
+    if data.get("global_trigger"):
+        global_section = f"""
+        <div class="card" style="border-left: 5px solid #ffc107;">
+            <span class="badge badge-global">Global Trigger Detected</span>
+            <p><strong>{data['global_trigger']}</strong> was modified. All projects are considered affected.</p>
+        </div>
+        """
+
+    project_items = ""
+    for p in data.get("affected_projects", []):
+        if p == ":": continue
+        reason = ""
+        if p in data.get("direct_impact", {}):
+            reason = f"<span class='reason'>Directly modified ({len(data['direct_impact'][p])} files)</span>"
+        elif p in data.get("transitive_impact", {}):
+            triggers = ", ".join(data['transitive_impact'][p])
+            reason = f"<span class='reason'>Depends on: {triggers}</span>"
+        
+        project_items += f"<li><span class='project-path'>{p}</span> {reason}</li>"
+
+    content = html_template.format(
+        timestamp=timestamp,
+        since_commit=data["since_commit"],
+        cache_status=data["cache"]["status"].upper(),
+        cache_source=data["cache"]["source"].upper(),
+        cache_class=cache_class,
+        affected_count=len(data["affected_projects"]),
+        files_changed=data["changes"]["filtered"],
+        global_section=global_section,
+        project_items=project_items,
+        tasks=" ".join(data.get("tasks", []))
+    )
+    
+    with open(output_path, 'w') as f:
+        f.write(content)
 
 def main():
     parser = argparse.ArgumentParser(description="Calculate affected Gradle tasks based on Git diff.")
     parser.add_argument("since", help="The git commit/branch to diff against.")
     parser.add_argument("tasks", nargs="+", help="The Gradle tasks to run (e.g., test assemble).")
     parser.add_argument("--report", help="Path to write a JSON report of the analysis.")
+    parser.add_argument("--html-report", help="Path to write an HTML report of the analysis.")
     args = parser.parse_args()
 
     report = {
@@ -214,6 +320,8 @@ def main():
     if not filtered_changes:
         if args.report:
             with open(args.report, 'w') as f: json.dump(report, f, indent=2)
+        if args.html_report:
+            generate_html_report(report, args.html_report)
         return
 
     affected_paths, impact_report = find_affected_projects(GRAPH_FILE, filtered_changes)
@@ -231,8 +339,9 @@ def main():
         print(" ".join(task_list))
 
     if args.report:
-        with open(args.report, 'w') as f:
-            json.dump(report, f, indent=2)
+        with open(args.report, 'w') as f: json.dump(report, f, indent=2)
+    if args.html_report:
+        generate_html_report(report, args.html_report)
 
 if __name__ == "__main__":
     main()
