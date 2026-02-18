@@ -163,22 +163,22 @@ def generate_html_report(data, output_path):
     <head>
         <title>Gradle Diff Report</title>
         <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f4f7f9; }
-            .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
-            h1, h2 { color: #2c3e50; }
-            .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
-            .badge-hit { background: #d4edda; color: #155724; }
-            .badge-miss { background: #f8d7da; color: #721c24; }
-            .badge-global { background: #fff3cd; color: #856404; }
-            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
-            .stat-box { text-align: center; padding: 15px; border-radius: 6px; background: #f8f9fa; border: 1px solid #dee2e6; }
-            .stat-val { display: block; font-size: 24px; font-weight: bold; color: #007bff; }
-            .stat-label { font-size: 12px; color: #6c757d; }
-            ul { list-style: none; padding: 0; }
-            li { padding: 8px 0; border-bottom: 1px solid #eee; }
-            .project-path { font-family: monospace; font-weight: bold; color: #e83e8c; }
-            .reason { font-size: 13px; color: #666; margin-left: 10px; }
-            .task-list { background: #2d3436; color: #dfe6e9; padding: 15px; border-radius: 6px; font-family: monospace; white-space: pre-wrap; word-break: break-all; }
+            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1000px; margin: 0 auto; padding: 20px; background: #f4f7f9; }}
+            .card {{ background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }}
+            h1, h2 {{ color: #2c3e50; }}
+            .badge {{ display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; text-transform: uppercase; }}
+            .badge-hit {{ background: #d4edda; color: #155724; }}
+            .badge-miss {{ background: #f8d7da; color: #721c24; }}
+            .badge-global {{ background: #fff3cd; color: #856404; }}
+            .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }}
+            .stat-box {{ text-align: center; padding: 15px; border-radius: 6px; background: #f8f9fa; border: 1px solid #dee2e6; }}
+            .stat-val {{ display: block; font-size: 24px; font-weight: bold; color: #007bff; }}
+            .stat-label {{ font-size: 12px; color: #6c757d; }}
+            ul {{ list-style: none; padding: 0; }}
+            li {{ padding: 8px 0; border-bottom: 1px solid #eee; }}
+            .project-path {{ font-family: monospace; font-weight: bold; color: #e83e8c; }}
+            .reason {{ font-size: 13px; color: #666; margin-left: 10px; }}
+            .task-list {{ background: #2d3436; color: #dfe6e9; padding: 15px; border-radius: 6px; font-family: monospace; white-space: pre-wrap; word-break: break-all; }}
         </style>
     </head>
     <body>
