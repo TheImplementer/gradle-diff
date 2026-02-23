@@ -54,12 +54,14 @@ def s3_upload(local_path, remote_path):
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"Warning: Failed to upload cache to S3: {e}", file=sys.stderr)
 
-def refresh_graph():
+def refresh_graph(extra_args=None):
     """Runs the Gradle task to refresh the project dependency graph."""
     print("Cache miss or config changed. Refreshing project graph via Gradle...", file=sys.stderr)
     try:
-        cmd = GRADLE_COMMAND if os.path.exists(GRADLE_COMMAND) else "gradle"
-        subprocess.check_call([cmd, GRADLE_TASK, "--quiet"])
+        cmd = [GRADLE_COMMAND if os.path.exists(GRADLE_COMMAND) else "gradle", GRADLE_TASK, "--quiet"]
+        if extra_args:
+            cmd.extend(extra_args)
+        subprocess.check_call(cmd)
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"Error refreshing graph: {e}. Ensure gradle is installed or gradlew is executable.", file=sys.stderr)
         sys.exit(1)
@@ -322,13 +324,32 @@ def generate_html_report(data, output_path):
 def main():
     parser = argparse.ArgumentParser(description="Calculate affected Gradle tasks based on Git diff.")
     parser.add_argument("since", help="The git commit/branch to diff against.")
-    parser.add_argument("tasks", nargs="+", help="The Gradle tasks to run (e.g., test assemble).")
+    # We use nargs='*' so we can parse flags manually from the remaining args
+    parser.add_argument("args", nargs="*", help="Gradle tasks (e.g. test) and flags (e.g. -Puser=foo).")
     parser.add_argument("--report", help="Path to write a JSON report of the analysis.")
     parser.add_argument("--html-report", help="Path to write an HTML report of the analysis.")
-    args = parser.parse_args()
+    
+    parsed, unknown = parser.parse_known_args()
+    
+    # Separate tasks from flags
+    task_names = []
+    gradle_flags = []
+    
+    # Combine positional args and unknown args to find all flags
+    all_args = parsed.args + unknown
+    
+    for arg in all_args:
+        if arg.startswith("-"):
+            gradle_flags.append(arg)
+        else:
+            task_names.append(arg)
+            
+    # Default to 'test' if no tasks specified
+    if not task_names:
+        task_names = ["test"]
 
     report = {
-        "since_commit": args.since,
+        "since_commit": parsed.since,
         "cache": {"status": "hit", "source": "local"},
         "config_hash": None,
         "changes": {"total": 0, "filtered": 0},
@@ -366,7 +387,7 @@ def main():
             stale = False
         else:
             report["cache"] = {"status": "miss", "source": "none"}
-            refresh_graph()
+            refresh_graph(gradle_flags)
             if BUCKET:
                 s3_upload(GRAPH_FILE, remote_key)
         
@@ -374,16 +395,16 @@ def main():
             f.write(current_hash)
 
     # 3. Analyze Git Changes
-    commits, all_files, filtered_files = get_git_info(args.since)
+    commits, all_files, filtered_files = get_git_info(parsed.since)
     report["commits"] = commits
     report["file_details"] = all_files
     report["changes"] = {"total": len(all_files), "filtered": len(filtered_files)}
     
     if not filtered_files:
-        if args.report:
-            with open(args.report, 'w') as f: json.dump(report, f, indent=2)
-        if args.html_report:
-            generate_html_report(report, args.html_report)
+        if parsed.report:
+            with open(parsed.report, 'w') as f: json.dump(report, f, indent=2)
+        if parsed.html_report:
+            generate_html_report(report, parsed.html_report)
         return
 
     affected_paths, impact_report = find_affected_projects(GRAPH_FILE, filtered_files)
@@ -394,16 +415,16 @@ def main():
         task_list = []
         for p in affected_paths:
             if p == ":": continue
-            for t in args.tasks:
+            for t in task_names:
                 task_list.append(f"{p}:{t}")
         
         report["tasks"] = task_list
         print(" ".join(task_list))
 
-    if args.report:
-        with open(args.report, 'w') as f: json.dump(report, f, indent=2)
-    if args.html_report:
-        generate_html_report(report, args.html_report)
+    if parsed.report:
+        with open(parsed.report, 'w') as f: json.dump(report, f, indent=2)
+    if parsed.html_report:
+        generate_html_report(report, parsed.html_report)
 
 if __name__ == "__main__":
     main()
