@@ -448,7 +448,8 @@ def main():
                 task_list.append(f"{p}:{t}")
         
         report["tasks"] = task_list
-        print(" ".join(task_list))
+        if task_list:
+            print(" ".join(task_list))
 
     if parsed.report:
         with open(parsed.report, 'w') as f: json.dump(report, f, indent=2)
