@@ -378,8 +378,14 @@ def main():
         if 'build' in dirs: dirs.remove('build')
         if '.git' in dirs: dirs.remove('.git')
         for f in files:
-            if f.endswith(('.gradle', '.gradle.kts', '.toml', '.properties')):
-                build_scripts.append(os.path.join(root, f))
+            full_path = os.path.join(root, f)
+            # Include build scripts and version catalogs
+            if f.endswith(('.gradle', '.gradle.kts', '.toml')):
+                build_scripts.append(full_path)
+            # Only include build-related properties files
+            elif f.endswith('.properties'):
+                if f == 'gradle.properties' or 'gradle' in root.split(os.sep):
+                    build_scripts.append(full_path)
     
     current_hash = get_hash(build_scripts)
     report["config_hash"] = current_hash
