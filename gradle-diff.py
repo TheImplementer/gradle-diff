@@ -29,11 +29,19 @@ PREFIX = os.environ.get("GRADLE_DIFF_S3_PREFIX", "gradle-diff-cache")
 
 def get_hash(file_list):
     """Generates a combined hash for all build configuration files."""
+    debug_hash = os.environ.get("GRADLE_DIFF_DEBUG_HASH") == "true"
+    if debug_hash:
+        print("[DEBUG-HASH] Starting per-file hashing...", file=sys.stderr)
+    
     hasher = hashlib.md5()
     for f in sorted(file_list):
         if os.path.exists(f):
             with open(f, 'rb') as fd:
-                hasher.update(fd.read())
+                content = fd.read()
+                file_hash = hashlib.md5(content).hexdigest()
+                if debug_hash:
+                    print(f"[DEBUG-HASH] {file_hash} | {f}", file=sys.stderr)
+                hasher.update(content)
     return hasher.hexdigest()
 
 def s3_download(remote_path, local_path):
