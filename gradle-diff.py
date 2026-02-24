@@ -38,21 +38,26 @@ def get_hash(file_list):
 
 def s3_download(remote_path, local_path):
     if not BUCKET: return False
+    full_s3_path = f"s3://{BUCKET}/{PREFIX}/{remote_path}"
+    print(f"[CACHE] Checking S3 for cached graph: {full_s3_path}", file=sys.stderr)
     try:
-        full_s3_path = f"s3://{BUCKET}/{PREFIX}/{remote_path}"
         subprocess.check_call(["aws", "s3", "ls", full_s3_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"[CACHE] Remote cache HIT. Downloading...", file=sys.stderr)
         subprocess.check_call(["aws", "s3", "cp", full_s3_path, local_path, "--quiet"])
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
+        print(f"[CACHE] Remote cache MISS (or AWS CLI not configured).", file=sys.stderr)
         return False
 
 def s3_upload(local_path, remote_path):
     if not BUCKET: return
+    full_s3_path = f"s3://{BUCKET}/{PREFIX}/{remote_path}"
+    print(f"[CACHE] Uploading new graph to S3: {full_s3_path}", file=sys.stderr)
     try:
-        full_s3_path = f"s3://{BUCKET}/{PREFIX}/{remote_path}"
         subprocess.check_call(["aws", "s3", "cp", local_path, full_s3_path, "--quiet"])
+        print(f"[CACHE] Successfully uploaded graph to S3.", file=sys.stderr)
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        print(f"Warning: Failed to upload cache to S3: {e}", file=sys.stderr)
+        print(f"[CACHE] Warning: Failed to upload cache to S3: {e}", file=sys.stderr)
 
 def refresh_graph(extra_args=None):
     """Runs the Gradle task to refresh the project dependency graph."""
@@ -371,6 +376,8 @@ def main():
     current_hash = get_hash(build_scripts)
     report["config_hash"] = current_hash
     remote_key = f"graph-{current_hash}.json"
+    
+    print(f"[CACHE] Calculated configuration hash: {current_hash}", file=sys.stderr)
 
     # 2. Cache Logic
     stale = True
@@ -378,8 +385,16 @@ def main():
         hash_file = ".gradle-diff-hash"
         if os.path.exists(hash_file):
             with open(hash_file, 'r') as f:
-                if f.read().strip() == current_hash:
+                saved_hash = f.read().strip()
+                if saved_hash == current_hash:
+                    print("[CACHE] Local cache HIT.", file=sys.stderr)
                     stale = False
+                else:
+                    print(f"[CACHE] Local cache STALE. (Saved: {saved_hash} != Current: {current_hash})", file=sys.stderr)
+        else:
+            print("[CACHE] Local hash file missing.", file=sys.stderr)
+    else:
+        print("[CACHE] Local graph file missing.", file=sys.stderr)
 
     if stale:
         if BUCKET and s3_download(remote_key, GRAPH_FILE):
